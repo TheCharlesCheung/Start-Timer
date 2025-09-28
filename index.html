@@ -31,7 +31,7 @@
     <button type="button" data-user="Laila">Laila</button>
     <button type="button" data-user="Aanya">Aanya</button>
     <button type="button" data-user="Prisha">Prisha</button>
-    <button type="button" data-user="OTHER/TESTING">OTHER/TESTING</button>
+    <button type="button" data-user="Other/Testing">Other/Testing</button>
     <p id="current-user">Current: None</p>
   </div>
 
@@ -54,7 +54,6 @@
 
   <script>
     // ---------- CONFIG ----------
-    // Replace with your Apps Script Web App URL (keep the quotes)
     const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwWrvUbk5ycpAl7NDxjodO4OjdXnKihwXz_n5wwPQEgjJ_w0IN-e-fusaRQtM06di2l1A/exec";
 
     // ---------- DOM ----------
@@ -72,34 +71,31 @@
     const STORAGE_KEY = 'f1_best_times_v1';
     let bestTimes = loadBestTimes();
 
-    // ---------- User selection via pointerdown (stops propagation so it won't start a run) ----------
+    // NEW: for ghost input protection
+    let countdownStartedAt = 0;
+    let inputLocked = false;
+
+    // ---------- User selection ----------
     userButtons.forEach(btn => {
       btn.addEventListener('pointerdown', (ev) => {
-        // stop the pointer event from reaching the document handler
         ev.stopPropagation();
-        ev.preventDefault(); // avoid focus/scroll side-effects on some devices
+        ev.preventDefault();
         selectedUser = btn.dataset.user;
         currentUserEl.textContent = 'Current: ' + selectedUser;
         bestEl.textContent = bestTimes[selectedUser] ? (+bestTimes[selectedUser]).toFixed(3) : '--';
       });
-      // fallback stops so clicks don't bubble either
       btn.addEventListener('click', (ev) => ev.stopPropagation());
     });
-
-    // also stop pointerdown on user-select container (extra safety)
     document.querySelector('.user-select').addEventListener('pointerdown', (ev) => ev.stopPropagation());
 
-    // ---------- Input handlers: pointerdown (tap/mouse/pen) AND spacebar ----------
+    // ---------- Input handlers ----------
     document.addEventListener('pointerdown', (ev) => {
-      // ignore taps on links
       if (ev.target.closest('a')) return;
       handleInput();
     });
 
     document.addEventListener('keydown', (ev) => {
-      // spacebar -> start/stop
       if (ev.code === 'Space' || ev.key === ' ') {
-        // prevent page scrolling and other default behaviour
         ev.preventDefault();
         handleInput();
       }
@@ -111,23 +107,35 @@
         return;
       }
 
+      // short lockout to stop double events from key repeat / ghost taps
+      if (inputLocked) return;
+      inputLocked = true;
+      setTimeout(() => { inputLocked = false; }, 50);
+
       if (state === 'idle') {
         startCountdown();
       } else if (state === 'countdown') {
+        const now = performance.now();
+        // ignore phantom events right at start of countdown
+        if (now - countdownStartedAt < 50) {
+          return;
+        }
         handleJumpStart();
       } else if (state === 'running') {
-        // capture reaction time immediately (pointerdown or space)
         const reaction = (performance.now() - startTimestamp) / 1000;
         finishRun(reaction);
       }
     }
 
-    // ---------- Countdown / lights logic (left→right, ~1s apart; hold 2–3s; then out = GO) ----------
+    // ---------- Countdown / lights logic ----------
     function startCountdown() {
       state = 'countdown';
       timeEl.textContent = 'Wait...';
       clearSequenceTimers();
       strips.forEach(s => s.classList.remove('on'));
+
+      // remember when countdown started
+      countdownStartedAt = performance.now();
 
       // light up left→right, 1s apart
       strips.forEach((strip, i) => {
@@ -140,7 +148,6 @@
       const hold = 2000 + Math.random() * 1000; // 2000..3000 ms
       const t2 = setTimeout(() => {
         strips.forEach(s => s.classList.remove('on'));
-        // align the visual change and timestamp to the next frame
         requestAnimationFrame(() => {
           startTimestamp = performance.now();
           state = 'running';
@@ -187,7 +194,6 @@
         return;
       }
       const payload = { user, time, jumpStart: !!jumpStart };
-      // Use no-cors so Apps Script without CORS headers still accepts posts
       fetch(SCRIPT_URL, {
         method: 'POST',
         mode: 'no-cors',
@@ -209,5 +215,4 @@
   </script>
 </body>
 </html>
-
 
