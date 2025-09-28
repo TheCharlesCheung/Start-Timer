@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>F1 Start Timer — Space + Tap Fixed</title>
+  <style>
+    /* layout & appearance (same look as before) */
+    body, html { height:100%; font-family:sans-serif; margin:0; overflow:hidden; touch-action:manipulation; }
+    body { display:flex; flex-direction:column; align-items:center; justify-content:center; }
+    .user-select { margin:10px; text-align:center; }
+    .user-select button { margin:5px; padding:8px 14px; font-size:15px; cursor:pointer; touch-action:manipulation; }
+    .light { border-radius:100%; background:#222; margin:10px; transition: background .12s, box-shadow .12s; }
+    .light::before { content:''; display:block; padding-top:100%; }
+    .light-strip.on .light:nth-child(1n+3) { background:red; box-shadow:0 0 24px rgba(255,0,0,0.45); }
+    .f1-lights { display:flex; position:relative; width:100%; max-width:520px; }
+    .light-strip { background:black; border-radius:11px; margin:0 2px; position:relative; flex:1; padding:6px 8px; box-sizing:border-box; }
+    @media (min-width:435px) { .light-strip { margin:0 5px; border-radius:14px; } }
+    .back-board { position:absolute; left:5px; right:5px; top:50%; height:5%; background:#000; transform:translateY(-50%); }
+    p { font-size:18px; text-align:center; line-height:1.4; margin:1em 1em 0; }
+    .time { font-size:12vw; margin:1rem; text-align:center; }
+    .best, .credit { font-size:18px; text-align:center; line-height:1.4; }
+  </style>
+</head>
+<body>
+  <div class="user-select" aria-hidden="false">
+    <p>Select User:</p>
+    <button type="button" data-user="Charles">Charles</button>
+    <button type="button" data-user="Daniel">Daniel</button>
+    <button type="button" data-user="Dhruv">Dhruv</button>
+    <button type="button" data-user="Laila">Laila</button>
+    <button type="button" data-user="Aanya">Aanya</button>
+    <button type="button" data-user="Prisha">Prisha</button>
+    <p id="current-user">Current: None</p>
+  </div>
+  <h1>DO NOT USE A MOUSE, NOT EVEN A WIRED ONE!! THAT RESULTS IN INACCURATE 600MS TIMINGS</h1>
+  <h1>ONLY USE TOUCHSCREEN OR SPACEBAR</h1>
+
+  <div class="f1-lights" id="f1lights">
+    <div class="back-board"></div>
+    <div class="light-strip"><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div></div>
+    <div class="light-strip"><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div></div>
+    <div class="light-strip"><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div></div>
+    <div class="light-strip"><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div></div>
+    <div class="light-strip"><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div></div>
+  </div>
+
+  <p>Tap anywhere or press <strong>Space</strong> when the lights go out.</p>
+
+  <div class="results">
+    <div class="time" id="time">00.000</div>
+    <div class="best">Your best: <span id="best-time">--</span></div>
+    <div class="credit">Created by @jaffathecake, modified/stolen by Charles</div>
+  </div>
+
+  <script>
+    // ---------- CONFIG ----------
+    // Replace with your Apps Script Web App URL (keep the quotes)
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwWrvUbk5ycpAl7NDxjodO4OjdXnKihwXz_n5wwPQEgjJ_w0IN-e-fusaRQtM06di2l1A/exec";
+
+    // ---------- DOM ----------
+    const strips = Array.from(document.querySelectorAll('.light-strip'));
+    const timeEl = document.getElementById('time');
+    const bestEl = document.getElementById('best-time');
+    const currentUserEl = document.getElementById('current-user');
+    const userButtons = document.querySelectorAll('.user-select button');
+
+    // ---------- STATE ----------
+    let state = 'idle'; // 'idle' | 'countdown' | 'running'
+    let sequenceTimers = [];
+    let startTimestamp = 0;
+    let selectedUser = null;
+    const STORAGE_KEY = 'f1_best_times_v1';
+    let bestTimes = loadBestTimes();
+
+    // ---------- User selection via pointerdown (stops propagation so it won't start a run) ----------
+    userButtons.forEach(btn => {
+      btn.addEventListener('pointerdown', (ev) => {
+        // stop the pointer event from reaching the document handler
+        ev.stopPropagation();
+        ev.preventDefault(); // avoid focus/scroll side-effects on some devices
+        selectedUser = btn.dataset.user;
+        currentUserEl.textContent = 'Current: ' + selectedUser;
+        bestEl.textContent = bestTimes[selectedUser] ? (+bestTimes[selectedUser]).toFixed(3) : '--';
+      });
+      // fallback stops so clicks don't bubble either
+      btn.addEventListener('click', (ev) => ev.stopPropagation());
+    });
+
+    // also stop pointerdown on user-select container (extra safety)
+    document.querySelector('.user-select').addEventListener('pointerdown', (ev) => ev.stopPropagation());
+
+    // ---------- Input handlers: pointerdown (tap/mouse/pen) AND spacebar ----------
+    document.addEventListener('pointerdown', (ev) => {
+      // ignore taps on links
+      if (ev.target.closest('a')) return;
+      handleInput();
+    });
+
+    document.addEventListener('keydown', (ev) => {
+      // spacebar -> start/stop
+      if (ev.code === 'Space' || ev.key === ' ') {
+        // prevent page scrolling and other default behaviour
+        ev.preventDefault();
+        handleInput();
+      }
+    });
+
+    function handleInput() {
+      if (!selectedUser) {
+        alert('Please select a user before starting!');
+        return;
+      }
+
+      if (state === 'idle') {
+        startCountdown();
+      } else if (state === 'countdown') {
+        handleJumpStart();
+      } else if (state === 'running') {
+        // capture reaction time immediately (pointerdown or space)
+        const reaction = (performance.now() - startTimestamp) / 1000;
+        finishRun(reaction);
+      }
+    }
+
+    // ---------- Countdown / lights logic (left→right, ~1s apart; hold 2–3s; then out = GO) ----------
+    function startCountdown() {
+      state = 'countdown';
+      timeEl.textContent = 'Wait...';
+      clearSequenceTimers();
+      strips.forEach(s => s.classList.remove('on'));
+
+      // light up left→right, 1s apart
+      strips.forEach((strip, i) => {
+        const t = setTimeout(() => strip.classList.add('on'), i * 1000);
+        sequenceTimers.push(t);
+      });
+
+      // after all lit: hold random 2–3s, then all go out together and start timer
+      const afterAllOn = strips.length * 1000;
+      const hold = 2000 + Math.random() * 1000; // 2000..3000 ms
+      const t2 = setTimeout(() => {
+        strips.forEach(s => s.classList.remove('on'));
+        // align the visual change and timestamp to the next frame
+        requestAnimationFrame(() => {
+          startTimestamp = performance.now();
+          state = 'running';
+          timeEl.textContent = '0.000';
+        });
+      }, afterAllOn + hold);
+      sequenceTimers.push(t2);
+    }
+
+    function handleJumpStart() {
+      clearSequenceTimers();
+      strips.forEach(s => s.classList.remove('on'));
+      state = 'idle';
+      timeEl.textContent = 'Jump Start!';
+      sendResult(selectedUser, "Jump Start", true);
+      setTimeout(() => { timeEl.textContent = '00.000'; }, 800);
+    }
+
+    function finishRun(reactionSec) {
+      if (reactionSec < 0) reactionSec = 0;
+      timeEl.textContent = reactionSec.toFixed(3);
+
+      const prevBest = bestTimes[selectedUser];
+      if (!prevBest || reactionSec < prevBest) {
+        bestTimes[selectedUser] = reactionSec;
+        saveBestTimes();
+        bestEl.textContent = reactionSec.toFixed(3);
+      }
+
+      sendResult(selectedUser, reactionSec.toFixed(3), false);
+      state = 'idle';
+      startTimestamp = 0;
+    }
+
+    // ---------- Helpers ----------
+    function clearSequenceTimers() {
+      sequenceTimers.forEach(t => clearTimeout(t));
+      sequenceTimers = [];
+    }
+
+    function sendResult(user, time, jumpStart) {
+      if (!SCRIPT_URL || SCRIPT_URL.includes('YOUR_WEB_APP_URL_HERE')) {
+        console.warn('SCRIPT_URL not set — not sending to sheet.');
+        return;
+      }
+      const payload = { user, time, jumpStart: !!jumpStart };
+      // Use no-cors so Apps Script without CORS headers still accepts posts
+      fetch(SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(err => console.warn('sheet send err', err));
+    }
+
+    function loadBestTimes() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch (e) { return {}; }
+    }
+    function saveBestTimes() {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(bestTimes)); } catch (e) { /* ignore */ }
+    }
+
+    // init UI
+    timeEl.textContent = '00.000';
+    bestEl.textContent = '--';
+  </script>
+</body>
+</html>
